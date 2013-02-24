@@ -16,6 +16,8 @@
 #define kHCDownloadErrorDomain @"HCDownloadErrorDomain"
 #define kHCDownloadErrorCodeCancelled (-1)
 
+#define kHCFileCellID @"HCFLCell"
+
 @class HCDownloadViewController;
 
 @protocol HCDownloadViewControllerDelegate <NSObject>
@@ -28,8 +30,11 @@
 
 @interface HCDownloadViewController: UITableViewController {
 	NSMutableArray *downloads;
+    NSMutableArray *files;
 	NSString *downloadDirectory;
 	id <HCDownloadViewControllerDelegate> delegate;
+    
+    NSUInteger selectedRow;
 }
 
 @property (nonatomic, copy) NSString *downloadDirectory;
@@ -37,5 +42,8 @@
 @property (nonatomic, assign) id <HCDownloadViewControllerDelegate> delegate;
 
 - (void)downloadURL:(NSURL *)url userInfo:(NSDictionary *)userInfo;
+
+// Singleton Methods
++(HCDownloadViewController *)sharedInstance;
 
 @end

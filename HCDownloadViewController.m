@@ -8,6 +8,8 @@
 
 #import <QuartzCore/QuartzCore.h>
 #import "HCDownloadViewController.h"
+#import <MediaPlayer/MediaPlayer.h>
+#import <Gremlin/Gremlin.h>
 
 /*
  * User info keys for internal use
@@ -22,7 +24,7 @@
 /*
  * Private methods
  */
-@interface HCDownloadViewController ()
+@interface HCDownloadViewController () <GremlinListener,UIActionSheetDelegate>
 - (void)removeURL:(NSURL *)url;
 - (void)removeURLAtIndex:(NSInteger)index;
 - (void)setupCell:(HCDownloadCell *)cell withAttributes:(NSDictionary *)attr;
@@ -34,20 +36,45 @@
 @synthesize downloadDirectory;
 @synthesize delegate;
 
+static HCDownloadViewController *sharedInstance = nil;
+
+/* @name Singleton Methods */
+
++(HCDownloadViewController *)sharedInstance
+{
+	static dispatch_once_t pred;
+	dispatch_once(&pred, ^{
+        
+        sharedInstance = [[self alloc] init];
+	}
+	              );
+    
+	return sharedInstance;
+}
+
+
 - (id)init
 {
-	return [self initWithStyle:UITableViewStyleGrouped];
+	return [self initWithStyle:UITableViewStylePlain];
 }
 
 - (id)initWithStyle:(UITableViewStyle)style
 {
-	if ((self = [super initWithStyle:style])) {
+	if ((self = [super initWithStyle:style]))
+    {
+        [Gremlin registerNotifications:self];
 		downloads = [[NSMutableArray alloc] init];
-		self.downloadDirectory = @"/var/mobile/Downloads";
+        files = [[NSMutableArray alloc] init];
+		self.downloadDirectory = @"/var/mobile/media/Downloads";
 		self.title = NSLocalizedString(@"Downloads", nil);
-		self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)] autorelease];
 	}
 	return self;
+}
+
+-(void)viewDidLoad
+{
+    [super viewDidLoad];
+    [self enumerateDownloadsDirectory];
 }
 
 - (void)dealloc
@@ -62,7 +89,69 @@
 
 	[downloads release];
 	self.downloadDirectory = nil;
+    
+    [files removeAllObjects];
+    [files release];
+    
 	[super dealloc];
+}
+
+/* Refresh list of files in save directory */
+-(void)enumerateDownloadsDirectory
+{
+	NSDirectoryEnumerator *dirEnum = [[ NSFileManager defaultManager ] enumeratorAtPath:self.downloadDirectory];
+    
+	NSString *file;
+    [self.tableView beginUpdates];
+	while (file = [dirEnum nextObject])
+	{
+        
+		BOOL isDirectory;
+		if (![file hasPrefix:@"."] &&
+            [[NSFileManager defaultManager] fileExistsAtPath:[self.downloadDirectory stringByAppendingPathComponent:file] isDirectory:&isDirectory] &&
+            [[[file pathExtension] lowercaseString] isEqualToString:@"mp3"])
+		{
+            
+			if (isDirectory)
+			{
+				NSMutableDictionary *dir = [[NSMutableDictionary alloc] initWithObjects:[NSArray arrayWithObjects:
+                                                                                         [self.downloadDirectory stringByAppendingPathComponent:file],
+                                                                                         [NSNumber numberWithBool:TRUE],
+                                                                                         nil]
+                                                                                forKeys:[NSArray arrayWithObjects:
+                                                                                         @"file",
+                                                                                         @"isDir",
+                                                                                         nil]];
+				[files addObject:dir];
+				[dirEnum skipDescendents];
+			}
+			else
+			{
+				NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:
+                                                [self.downloadDirectory stringByAppendingPathComponent:file]
+                                                                                                error:nil];
+				NSMutableDictionary *tFile = [[NSMutableDictionary alloc] initWithObjects:[NSArray arrayWithObjects:
+                                                                                           [self.downloadDirectory stringByAppendingPathComponent:file],
+                                                                                           [fileAttributes objectForKey:NSFileSize],
+                                                                                           [NSNumber numberWithBool:NO],
+                                                                                           nil]
+                                                                                  forKeys:[NSArray arrayWithObjects:
+                                                                                           @"file",
+                                                                                           @"size",
+                                                                                           @"isDir", nil]];
+                NSIndexPath *indexPath = [NSIndexPath indexPathForRow:files.count inSection:1];
+                [files addObject: tFile];
+                [self.tableView insertRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationBottom];
+			}
+		}
+	}
+     [self.tableView endUpdates];
+    
+	//NSSortDescriptor *aSortDescriptor = [[NSSortDescriptor alloc] initWithKey:@"file" ascending:YES selector:@selector(caseInsensitiveCompare:)];
+	//[files sortUsingDescriptors:[NSArray arrayWithObject:aSortDescriptor]];
+    
+	//[self.tableView reloadData];
+    
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)o
@@ -77,7 +166,12 @@
 
 - (void)close
 {
-	[self dismissModalViewControllerAnimated:YES];
+	[self dismissViewControllerAnimated:YES completion:nil];
+}
+
+-(void)updateTabBarBadgeValue
+{
+    [self.tabBarItem setBadgeValue:[NSString stringWithFormat:@"%i", downloads.count]];
 }
 
 - (void)downloadURL:(NSURL *)url userInfo:(NSDictionary *)userInfo
@@ -98,6 +192,7 @@
 	[self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationRight];
 	
 	[UIApplication sharedApplication].networkActivityIndicatorVisible = YES;
+    [self updateTabBarBadgeValue];
 }
 
 - (void)cancelDownloadingURLAtIndex:(NSInteger)index;
@@ -151,6 +246,18 @@
 	if (downloads.count == 0) {
 		[UIApplication sharedApplication].networkActivityIndicatorVisible = NO;
 	}
+    
+    [self updateTabBarBadgeValue];
+}
+
+
+- (void)setupFileCell:(UITableViewCell *)cell withAttributes:(NSDictionary *)dict
+{
+    NSString *filePath =  [dict objectForKey:@"file"];
+    cell.textLabel.text = [filePath lastPathComponent];
+    
+    double size = [[dict objectForKey:@"size"] doubleValue]/1048576.00f;
+    [[cell detailTextLabel] setText:[NSString stringWithFormat:@"%.02f Mb",size]];
 }
 
 - (void)setupCell:(HCDownloadCell *)cell withAttributes:(NSDictionary *)dict
@@ -210,27 +317,54 @@
 
 // UITableViewDelegate, UITableViewDataSource
 
+-(NSInteger)countForSection:(NSInteger)section
+{
+    switch (section) {
+        case 0:
+            return downloads.count;
+            break;
+        default:
+            return files.count;
+            break;
+    }
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
 {
-	return 1;
+	return 2;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-	return downloads.count;
+    return [self countForSection:section];
+	
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-	HCDownloadCell *cell = (HCDownloadCell *)[tableView dequeueReusableCellWithIdentifier:kHCDownloadCellID];
+    if (indexPath.section == 0)
+    {
+        HCDownloadCell *cell = (HCDownloadCell *)[tableView dequeueReusableCellWithIdentifier:kHCDownloadCellID];
+        if (cell == nil) {
+            cell = [HCDownloadCell cell];
+        }
+        
+        NSMutableDictionary *dict = [downloads objectAtIndex:indexPath.row];
+        [self setupCell:cell withAttributes:dict];
+        
+        return cell;
+    }
+    
+    UITableViewCell *cell = (UITableViewCell *)[tableView dequeueReusableCellWithIdentifier:kHCFileCellID];
 	if (cell == nil) {
-		cell = [HCDownloadCell cell];
+		cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:kHCFileCellID];
 	}
-
-	NSMutableDictionary *dict = [downloads objectAtIndex:indexPath.row];
-	[self setupCell:cell withAttributes:dict];
-
+    
+	NSMutableDictionary *dict = [files objectAtIndex:indexPath.row];
+	[self setupFileCell:cell withAttributes:dict];
+    
 	return cell;
+	
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath
@@ -246,10 +380,54 @@
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)indexPath
 {
 	// Handle delete action initiated by the user
-	if (style == UITableViewCellEditingStyleDelete) {
-		if (indexPath.section == 0) {
+	if (style == UITableViewCellEditingStyleDelete)
+    {
+		if (indexPath.section == 0)
+        {
 			[self cancelDownloadingURLAtIndex:indexPath.row];
 		}
+        else if (indexPath.section == 1)
+        {
+            [tableView beginUpdates];
+            [tableView deleteRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+            
+            NSDictionary *dict = [files objectAtIndex:indexPath.row];
+            NSString *filePath = [dict objectForKey:@"file"];
+            
+            NSFileManager *fileManager = [NSFileManager defaultManager];
+            [fileManager removeItemAtPath:filePath error:nil];
+            [files removeObjectAtIndex:indexPath.row];
+            [tableView endUpdates];
+        }
+	}
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    
+	if(section == 0)
+    {
+        return @"Transfers";
+    }
+	else
+	{
+		return self.downloadDirectory;
+	}
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+	if(indexPath.section == 1)
+	{
+		selectedRow = indexPath.row;
+		NSDictionary *dict = [files objectAtIndex:indexPath.row];
+        NSString *filePath = [dict valueForKey:@"file"];
+        if ([[[filePath lowercaseString] pathExtension] isEqualToString:@"mp3"])
+        {
+            UIActionSheet *playSheet = [[UIActionSheet alloc] initWithTitle:@"Options" delegate:self cancelButtonTitle:@"Cancel" destructiveButtonTitle:nil otherButtonTitles:@"Play",@"Add To iPod",nil];
+            
+            [playSheet setActionSheetStyle:UIActionSheetStyleBlackTranslucent];
+            [playSheet showInView:[[SharedDelegate tabBarController] view]];
+        }
 	}
 }
 
@@ -354,6 +532,7 @@
 			NSDictionary *userInfo = [d objectForKey:kHCDownloadKeyUserInfo];
 			[self.delegate downloadController:self finishedDownloadingURL:url toFile:fileName userInfo:userInfo];
 		}
+        [self enumerateDownloadsDirectory];
 	}
 
 	[d release];
@@ -389,4 +568,44 @@
 	[d release];
 }
 
+#pragma makr - UIActionSheetDelegate
+
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex
+{
+    if (selectedRow <= ([files count]-1))
+    {
+        //@"Play",@"Add To iPod"
+        NSDictionary *dict = [files objectAtIndex:selectedRow];
+        NSString *filePath = [dict valueForKey:@"file"];
+        if ([[actionSheet buttonTitleAtIndex:buttonIndex] isEqualToString:@"Play"])
+        {
+            //To-Do switch to modal AVController....I got lazy
+            MPMoviePlayerViewController *audioPlayer = [[MPMoviePlayerViewController alloc] initWithContentURL:[NSURL fileURLWithPath:filePath]];
+            [[SharedDelegate tabBarController] presentMoviePlayerViewControllerAnimated:audioPlayer];
+            
+        } else if ([[actionSheet buttonTitleAtIndex:buttonIndex] isEqualToString:@"Add To iPod"])
+        {
+            [self importFileAtPath:filePath];
+        }
+    }
+}
+
+#pragma mark - iPod Import
+-(void)importFileAtPath:(NSString *)songPath
+{
+    [Gremlin importFileAtPath:songPath];
+}
+
+- (void)gremlinImportWasSuccessful:(NSDictionary*)info
+{
+    NSLog(@"Gremlin import successful: %@", info);
+}
+- (void)gremlinImport:(NSDictionary*)info didFailWithError:(NSError*)error
+{
+     NSLog(@"Gremlin import failed: %@ withError: %@", info, error);
+}
+
+- (NSString *)iconImageName {
+	return @"manage.png";
+}
 @end
